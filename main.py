@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy.orm import Session
 
 import database_model
 from database import engine, session
@@ -52,6 +53,14 @@ products_list = [
 ]
 
 
+def get_db():
+    db = session()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def init_db():
     db = session()
     count = db.query(database_model.Product).count()
@@ -65,39 +74,52 @@ init_db()
 
 
 @app.get("/products")
-def get_products():
-    # db = session()
-    # db.query()
-    return products_list
+def get_products(db: Session = Depends(get_db)):
+    db_products = db.query(database_model.Product).all()
+    return db_products
 
 
 @app.get("/product/{id}")
-def get_product_by_id(id: int):
-    for item in products_list:
-        if item.id == id:
-            return item
-    return "Product Not Found"
+def get_product_by_id(id: int, db: Session = Depends(get_db)):
+    db_product = (
+        db.query(database_model.Product).filter(database_model.Product.id == id).first()
+    )
+    if db_product:
+        return db_product
+    return "No Products"
 
 
 @app.post("/products")
-def add_product(product: Product):
-    products_list.append(product)
-    return product
+def add_product(product: Product, db: Session = Depends(get_db)):
+    db_product = database_model.Product(**product.model_dump())
+    db.add(db_product)
+    db.commit()
+    return db_product
 
 
 @app.put("/products")
-def update_product(id: int, product: Product):
-    for i in range(len(products_list)):
-        if products_list[i].id == id:
-            products_list[i] = product
-            return "Prodcut Added Successfully"
-    return "No Product Found"
+def update_product(id: int, product: Product, db: Session = Depends(get_db)):
+    db_product = (
+        db.query(database_model.Product).filter(database_model.Product.id == id).first()
+    )
+    if db_product:
+        db_product.name = product.name
+        db_product.description = product.description
+        db_product.price = product.price
+        db_product.quantity = product.quantity
+        db.commit()
+        return "Prodcut Added Successfully"
+    else:
+        return "No Product Found"
 
 
 @app.delete("/products")
-def delete_product(id: int):
-    for i in range(len(products_list)):
-        if products_list[i].id == id:
-            del products_list[i]
-            return "Prodcut Deleted Successfully"
-    return "No Product Found"
+def delete_product(id: int, db: Session = Depends(get_db)):
+    db_product = (
+        db.query(database_model.Product).filter(database_model.Product.id == id).first()
+    )
+    if db_product:
+        db.delete(db_product)
+        return "Prodcut Deleted Successfully"
+    else:
+        return "No Product Found"
