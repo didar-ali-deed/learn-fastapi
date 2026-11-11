@@ -79,7 +79,7 @@ def get_products(db: Session = Depends(get_db)):
     return db_products
 
 
-@app.get("/product/{id}")
+@app.get("/products/{id}")
 def get_product_by_id(id: int, db: Session = Depends(get_db)):
     db_product = (
         db.query(database_model.Product).filter(database_model.Product.id == id).first()
