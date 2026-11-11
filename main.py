@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 import database_model
@@ -7,6 +8,13 @@ from model import Product
 
 database_model.Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
@@ -97,7 +105,7 @@ def add_product(product: Product, db: Session = Depends(get_db)):
     return db_product
 
 
-@app.put("/products")
+@app.put("/products/{id}")
 def update_product(id: int, product: Product, db: Session = Depends(get_db)):
     db_product = (
         db.query(database_model.Product).filter(database_model.Product.id == id).first()
@@ -113,13 +121,14 @@ def update_product(id: int, product: Product, db: Session = Depends(get_db)):
         return "No Product Found"
 
 
-@app.delete("/products")
+@app.delete("/products/{id}")
 def delete_product(id: int, db: Session = Depends(get_db)):
     db_product = (
         db.query(database_model.Product).filter(database_model.Product.id == id).first()
     )
     if db_product:
         db.delete(db_product)
-        return "Prodcut Deleted Successfully"
+        db.commit()
+        return "Product Deleted Successfully"
     else:
         return "No Product Found"
