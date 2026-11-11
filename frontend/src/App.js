@@ -1,198 +1,184 @@
-import React, { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import "./App.css";
-import TaglineSection from "./TaglineSection";
 
-const api = axios.create({
-  baseURL: "http://localhost:8000",
-});
+const api = axios.create({ baseURL: "http://localhost:8000" });
+
+const EMPTY_FORM = { id: "", name: "", description: "", price: "", quantity: "" };
+const LOW_STOCK = 10;
+const NUMERIC_FIELDS = new Set(["id", "price", "quantity"]);
+
+const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+
+function getErrorMessage(err, fallback) {
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d) => `${d.loc?.slice(1).join(".")}: ${d.msg}`).join(", ");
+  }
+  return fallback;
+}
+
+function SortHeader({ field, label, sortField, sortDirection, onSort }) {
+  const active = sortField === field;
+  return (
+    <th
+      className={`sortable ${active ? `sort-${sortDirection}` : ""}`}
+      onClick={() => onSort(field)}
+      aria-sort={active ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}
+    >
+      {label}
+    </th>
+  );
+}
 
 function App() {
   const [products, setProducts] = useState([]);
-  const [form, setForm] = useState({
-    id: "",
-    name: "",
-    description: "",
-    price: "",
-    quantity: "",
-  });
+  const [form, setForm] = useState(EMPTY_FORM);
   const [editId, setEditId] = useState(null);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState(null); // { type: "success" | "error", text }
+  const [fetching, setFetching] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState("");
-  const [sortField, setSortField] = useState("id");
-  const [sortDirection, setSortDirection] = useState("asc");
+  const [sort, setSort] = useState({ field: "id", direction: "asc" });
 
-  // Auto-dismiss messages after 5 seconds
+  const isEditing = editId !== null;
+  const busy = fetching || saving;
+
+  // Auto-dismiss notice
   useEffect(() => {
-    if (message) {
-      const timer = setTimeout(() => {
-        setMessage("");
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [message]);
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
-  useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => {
-        setError("");
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
-
-  // Fetch all products
-  const fetchProducts = async () => {
-    setLoading(true);
+  const fetchProducts = useCallback(async () => {
+    setFetching(true);
     try {
-      const res = await api.get("/products/");
-      setProducts(res.data);
-      setError("");
+      const { data } = await api.get("/products");
+      setProducts(data);
     } catch (err) {
-      setError("Failed to fetch products");
+      setNotice({ type: "error", text: getErrorMessage(err, "Failed to fetch products") });
+    } finally {
+      setFetching(false);
     }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    // Inline initial fetch to avoid referencing external deps
-    const run = async () => {
-      setLoading(true);
-      try {
-        const res = await api.get("/products/");
-        setProducts(res.data);
-        setError("");
-      } catch (err) {
-        setError("Failed to fetch products");
-      }
-      setLoading(false);
-    };
-    run();
   }, []);
 
-  // Handle sorting
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
-    } else {
-      setSortField(field);
-      setSortDirection("asc");
-    }
-  };
+  useEffect(() => {
+    fetchProducts();
+  }, [fetchProducts]);
 
-  // Derived list with filter and sorting
-  const filteredProducts = useMemo(() => {
-    let filtered = products;
-    
-    // Apply filter
+  // Derived data
+  const visibleProducts = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (q) {
-      filtered = products.filter((p) =>
-        String(p.id).includes(q) ||
-        p.name?.toLowerCase().includes(q) ||
-        p.description?.toLowerCase().includes(q)
-      );
-    }
-    
-    // Apply sorting
-    return filtered.sort((a, b) => {
-      let aVal = a[sortField];
-      let bVal = b[sortField];
-      
-      // Handle numeric fields
-      if (sortField === "id" || sortField === "price" || sortField === "quantity") {
-        aVal = Number(aVal);
-        bVal = Number(bVal);
-      } else {
-        // Handle string fields
-        aVal = String(aVal).toLowerCase();
-        bVal = String(bVal).toLowerCase();
-      }
-      
-      if (aVal < bVal) return sortDirection === "asc" ? -1 : 1;
-      if (aVal > bVal) return sortDirection === "asc" ? 1 : -1;
+    const filtered = q
+      ? products.filter(
+        (p) =>
+          String(p.id).includes(q) ||
+          p.name?.toLowerCase().includes(q) ||
+          p.description?.toLowerCase().includes(q)
+      )
+      : products;
+
+    const { field, direction } = sort;
+    const dir = direction === "asc" ? 1 : -1;
+    const numeric = NUMERIC_FIELDS.has(field);
+
+    return [...filtered].sort((a, b) => {
+      const aVal = numeric ? Number(a[field]) : String(a[field] ?? "").toLowerCase();
+      const bVal = numeric ? Number(b[field]) : String(b[field] ?? "").toLowerCase();
+      if (aVal < bVal) return -1 * dir;
+      if (aVal > bVal) return 1 * dir;
       return 0;
     });
-  }, [products, filter, sortField, sortDirection]);
+  }, [products, filter, sort]);
 
-  // Handle form input
+  const stats = useMemo(
+    () => ({
+      total: products.length,
+      lowStock: products.filter((p) => Number(p.quantity) < LOW_STOCK).length,
+      value: products.reduce((sum, p) => sum + Number(p.price) * Number(p.quantity), 0),
+    }),
+    [products]
+  );
+
+  // Handlers
+  const handleSort = (field) =>
+    setSort((prev) =>
+      prev.field === field
+        ? { field, direction: prev.direction === "asc" ? "desc" : "asc" }
+        : { field, direction: "asc" }
+    );
+
   const handleChange = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    setForm((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Reset form
   const resetForm = () => {
-    setForm({ id: "", name: "", description: "", price: "", quantity: "" });
+    setForm(EMPTY_FORM);
     setEditId(null);
   };
 
-  // Create or update product
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
-    setMessage("");
-    setError("");
+    setSaving(true);
+    setNotice(null);
+
+    const payload = {
+      id: Number(form.id),
+      name: form.name.trim(),
+      description: form.description.trim(),
+      price: Number(form.price),
+      quantity: Number(form.quantity),
+    };
+
     try {
-      if (editId) {
-        await api.put(`/products/${editId}`, {
-          ...form,
-          id: Number(form.id),
-          price: Number(form.price),
-          quantity: Number(form.quantity),
-        });
-        setMessage("Product updated successfully");
+      if (isEditing) {
+        await api.put(`/products/${editId}`, payload);
+        setNotice({ type: "success", text: "Product updated successfully" });
       } else {
-        await api.post("/products/", {
-          ...form,
-          id: Number(form.id),
-          price: Number(form.price),
-          quantity: Number(form.quantity),
-        });
-        setMessage("Product created successfully");
+        await api.post("/products", payload);
+        setNotice({ type: "success", text: "Product created successfully" });
       }
       resetForm();
-      fetchProducts();
+      await fetchProducts();
     } catch (err) {
-      setError(err.response?.data?.detail || "Operation failed");
+      setNotice({ type: "error", text: getErrorMessage(err, "Operation failed") });
+    } finally {
+      setSaving(false);
     }
-    setLoading(false);
   };
 
-  // Edit product
   const handleEdit = (product) => {
     setForm({
       id: product.id,
-      name: product.name,
-      description: product.description,
-      price: product.price,
-      quantity: product.quantity,
+      name: product.name ?? "",
+      description: product.description ?? "",
+      price: product.price ?? "",
+      quantity: product.quantity ?? "",
     });
     setEditId(product.id);
-    setMessage("");
-    setError("");
+    setNotice(null);
   };
 
-  // Delete product
   const handleDelete = async (id) => {
-    const ok = window.confirm("Delete this product?");
-    if (!ok) return;
-    setLoading(true);
-    setMessage("");
-    setError("");
+    if (!window.confirm("Delete this product?")) return;
+    setSaving(true);
+    setNotice(null);
     try {
       await api.delete(`/products/${id}`);
-      setMessage("Product deleted successfully");
-      fetchProducts();
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      if (editId === id) resetForm();
+      setNotice({ type: "success", text: "Product deleted successfully" });
     } catch (err) {
-      setError("Delete failed");
+      setNotice({ type: "error", text: getErrorMessage(err, "Delete failed") });
+    } finally {
+      setSaving(false);
     }
-    setLoading(false);
   };
 
-  const currency = (n) =>
-    typeof n === "number" ? n.toFixed(2) : Number(n || 0).toFixed(2);
+  const sortProps = { sortField: sort.field, sortDirection: sort.direction, onSort: handleSort };
 
   return (
     <div className="app-bg">
@@ -202,18 +188,20 @@ function App() {
           <h1>Telusko Trac</h1>
         </div>
         <div className="top-actions">
-          <button className="btn btn-light" onClick={fetchProducts} disabled={loading}>
-            Refresh
+          <button className="btn btn-light" onClick={fetchProducts} disabled={busy}>
+            {fetching ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </header>
 
       <div className="container">
         <div className="stats">
-          <div className="chip">Total: {products.length}</div>
+          <div className="chip">Total: {stats.total}</div>
+          <div className="chip">Low stock: {stats.lowStock}</div>
+          <div className="chip">Value: {money(stats.value)}</div>
           <div className="search">
             <input
-              type="text"
+              type="search"
               placeholder="Search by id, name or description..."
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
@@ -223,7 +211,7 @@ function App() {
 
         <div className="content-grid">
           <div className="card form-card">
-            <h2>{editId ? "Edit Product" : "Add Product"}</h2>
+            <h2>{isEditing ? "Edit Product" : "Add Product"}</h2>
             <form onSubmit={handleSubmit} className="product-form">
               <input
                 type="number"
@@ -231,8 +219,9 @@ function App() {
                 placeholder="ID"
                 value={form.id}
                 onChange={handleChange}
+                min="1"
                 required
-                disabled={!!editId}
+                disabled={isEditing}
               />
               <input
                 type="text"
@@ -256,8 +245,9 @@ function App() {
                 placeholder="Price"
                 value={form.price}
                 onChange={handleChange}
-                required
+                min="0"
                 step="0.01"
+                required
               />
               <input
                 type="number"
@@ -265,20 +255,21 @@ function App() {
                 placeholder="Quantity"
                 value={form.quantity}
                 onChange={handleChange}
+                min="0"
+                step="1"
                 required
               />
               <div className="form-actions">
-                <button className="btn" type="submit" disabled={loading}>
-                  {editId ? "Update" : "Add"}
+                <button className="btn" type="submit" disabled={saving}>
+                  {saving ? "Saving..." : isEditing ? "Update" : "Add"}
                 </button>
-                {editId && (
+                {isEditing && (
                   <button
                     className="btn btn-secondary"
                     type="button"
                     onClick={() => {
                       resetForm();
-                      setMessage("");
-                      setError("");
+                      setNotice(null);
                     }}
                   >
                     Cancel
@@ -286,72 +277,63 @@ function App() {
                 )}
               </div>
             </form>
-            {message && <div className="success-msg">{message}</div>}
-            {error && <div className="error-msg">{error}</div>}
+            {notice && (
+              <div className={notice.type === "success" ? "success-msg" : "error-msg"} role="status">
+                {notice.text}
+              </div>
+            )}
           </div>
-          
-          <TaglineSection />
 
           <div className="card list-card">
             <h2>Products</h2>
-            {loading ? (
+            {fetching && products.length === 0 ? (
               <div className="loader">Loading...</div>
             ) : (
               <div className="scroll-x">
                 <table className="product-table">
                   <thead>
                     <tr>
-                      <th 
-                        className={`sortable ${sortField === 'id' ? `sort-${sortDirection}` : ''}`}
-                        onClick={() => handleSort('id')}
-                      >
-                        ID
-                      </th>
-                      <th 
-                        className={`sortable ${sortField === 'name' ? `sort-${sortDirection}` : ''}`}
-                        onClick={() => handleSort('name')}
-                      >
-                        Name
-                      </th>
+                      <SortHeader field="id" label="ID" {...sortProps} />
+                      <SortHeader field="name" label="Name" {...sortProps} />
                       <th>Description</th>
-                      <th 
-                        className={`sortable ${sortField === 'price' ? `sort-${sortDirection}` : ''}`}
-                        onClick={() => handleSort('price')}
-                      >
-                        Price
-                      </th>
-                      <th 
-                        className={`sortable ${sortField === 'quantity' ? `sort-${sortDirection}` : ''}`}
-                        onClick={() => handleSort('quantity')}
-                      >
-                        Quantity
-                      </th>
+                      <SortHeader field="price" label="Price" {...sortProps} />
+                      <SortHeader field="quantity" label="Quantity" {...sortProps} />
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredProducts.map((p) => (
+                    {visibleProducts.map((p) => (
                       <tr key={p.id}>
                         <td>{p.id}</td>
                         <td className="name-cell">{p.name}</td>
-                        <td className="desc-cell" title={p.description}>{p.description}</td>
-                        <td className="price-cell">${currency(p.price)}</td>
+                        <td className="desc-cell" title={p.description}>
+                          {p.description}
+                        </td>
+                        <td className="price-cell">{money(p.price)}</td>
                         <td>
                           <span className="qty-badge">{p.quantity}</span>
                         </td>
                         <td>
                           <div className="row-actions">
-                            <button className="btn btn-edit" onClick={() => handleEdit(p)}>
+                            <button
+                              className="btn btn-edit"
+                              onClick={() => handleEdit(p)}
+                              disabled={saving}
+                            >
                               Edit
                             </button>
-                            <button className="btn btn-delete" onClick={() => handleDelete(p.id)}>
+                            <button
+                              className="btn btn-delete"
+                              onClick={() => handleDelete(p.id)}
+                              disabled={saving}
+                            >
                               Delete
                             </button>
                           </div>
                         </td>
                       </tr>
                     ))}
-                    {filteredProducts.length === 0 && (
+                    {visibleProducts.length === 0 && (
                       <tr>
                         <td colSpan={6} className="empty">
                           No products found.
